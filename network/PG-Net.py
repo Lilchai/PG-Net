@@ -47,7 +47,7 @@ class LaplacianPyramidFusion(nn.Module):
             blurred = self.gaussian_blur_3d(gaussian_pyramid[-1])
             downsampled = blurred[:, :, ::2, ::2, ::2]
             gaussian_pyramid.append(downsampled)
-        # 构建拉普拉斯金字塔（高频细节）
+        # 构建拉普拉斯金字塔
         laplacian_pyramid = []
         for i in range(len(gaussian_pyramid) - 1):
             current = gaussian_pyramid[i]
@@ -61,7 +61,7 @@ class LaplacianPyramidFusion(nn.Module):
             upsampled_blurred = self.gaussian_blur_3d(upsampled)
             laplacian = current - upsampled_blurred  # 高频细节
             laplacian_pyramid.append(laplacian)
-        # 最后一层是低频残差
+
         laplacian_pyramid.append(gaussian_pyramid[-1])
         return laplacian_pyramid
 
@@ -122,7 +122,7 @@ class MPConvEncoder3DWithLaplacian(nn.Module):
         return x1, x2, x3, x4
 
 # ===========================
-# 2. 基础组件 (MPConv, AG, UpBlock)
+# 2. 基础组件
 # ===========================
 class MPConv(nn.Module):
     def __init__(self, in_channels, out_channels=None, kernel_size=3):
@@ -151,23 +151,17 @@ class MPConv(nn.Module):
 
 
 class VesselGuidedAttentionGate3D(nn.Module):
-    """
-    修改后的注意力模块：
-    1. 将上采样后的深层特征 g 与血管概率图 vessel_map 拼接
-    2. 卷积融合并提取通道注意力特征
-    3. 生成注意力图引导跳跃连接特征 x
-    """
 
     def __init__(self, F_g, F_l, F_int, norm_layer=nn.InstanceNorm3d):
         super().__init__()
-        # 1. 用于处理拼接后的 (g + vessel_map)
+
         self.W_gv = nn.Sequential(
             nn.Conv3d(F_g + 1, F_int, kernel_size=3, padding=1),
             norm_layer(F_int),
             nn.ReLU(inplace=True)
         )
 
-        # 2. 通道注意力分支 (Squeeze-and-Excitation 风格)
+
         self.channel_attn = nn.Sequential(
             nn.AdaptiveAvgPool3d(1),
             nn.Conv3d(F_int, F_int // 4, kernel_size=1),
@@ -176,7 +170,7 @@ class VesselGuidedAttentionGate3D(nn.Module):
             nn.Sigmoid()
         )
 
-        # 3. 生成空间注意力权重
+
         self.psi = nn.Sequential(
             nn.Conv3d(F_int, 1, kernel_size=1),
             norm_layer(1),
@@ -186,29 +180,23 @@ class VesselGuidedAttentionGate3D(nn.Module):
         self.alpha = nn.Parameter(torch.tensor(0.2))
 
     def forward(self, g, x, vessel_map):
-        # 确保血管图尺寸与特征图一致
+
         if vessel_map.shape[2:] != g.shape[2:]:
             vessel_map = F.interpolate(vessel_map, size=g.shape[2:], mode='trilinear', align_corners=False)
 
-        # A. 拼接深层特征 g 和 血管图 vessel_map
         combined = torch.cat([g, vessel_map], dim=1)
 
-        # B. 卷积融合
         fused = self.W_gv(combined)
 
-        # C. 通道注意力强化
         ca = self.channel_attn(fused)
         fused = fused * ca
 
-        # D. 生成注意力引导图
         psi = self.psi(fused)
 
-        # E. 引导跳跃连接特征
         return x * (1 + self.alpha * psi), psi
 
 class UpBlock3D(nn.Module):
-    """通用上采样块：支持 Concat + DoubleConv"""
-
+    """通用上采样块"""
     def __init__(self, in_up, skip_ch, out_ch, norm_layer=nn.BatchNorm3d):
         super().__init__()
         self.up = nn.ConvTranspose3d(in_up, out_ch, kernel_size=2, stride=2)
@@ -230,7 +218,6 @@ class UpBlock3DWithVesselAttention(nn.Module):
     def __init__(self, in_up, skip_ch, out_ch, norm_layer=nn.InstanceNorm3d):
         super().__init__()
         self.up = nn.ConvTranspose3d(in_up, out_ch, kernel_size=2, stride=2)
-        # 使用上面定义的新 AG
         self.attention_gate = VesselGuidedAttentionGate3D(F_g=out_ch, F_l=skip_ch, F_int=out_ch // 2,
                                                           norm_layer=norm_layer)
         self.conv = nn.Sequential(
@@ -245,9 +232,7 @@ class UpBlock3DWithVesselAttention(nn.Module):
         if x_up.shape[2:] != x_skip.shape[2:]:
             x_skip = F.interpolate(x_skip, size=x_up.shape[2:], mode='trilinear', align_corners=False)
 
-        # 这里将 vessel_map 传入注意力门控
         x_skip, attn = self.attention_gate(x_up, x_skip, vessel_map)
-
         return self.conv(torch.cat([x_up, x_skip], dim=1)), attn
 
 
@@ -260,7 +245,6 @@ class FMV_Net(nn.Module):
         norm_layer = nn.BatchNorm3d if norm_name == "batch" else nn.InstanceNorm3d
 
         self.encoder = MPConvEncoder3DWithLaplacian(in_channels, fusion_type)
-
 
         # 瓶颈层与上采样块
         self.bottleneck = nn.Sequential(
@@ -284,7 +268,6 @@ class FMV_Net(nn.Module):
 
     def forward(self, x, vessel_map=None, return_aux=False):
         # 1. 编码器入口引导 (Stem 之后)
-        # 注意：这里需要根据你 Encoder 的内部实现调用 stem
         pyramid = self.encoder.laplacian.build_laplacian_pyramid(x)
 
         x_stem = self.encoder.stem(x)

@@ -45,9 +45,6 @@ def save_nifti(data, affine, filename, dtype=None):
 
 
 def fix_affine_matrix(affine):
-    """
-    修复仿射矩阵使其符合nibabel的要求
-    """
     affine = np.array(affine, dtype=np.float64)
 
     if affine.shape != (4, 4):
@@ -66,7 +63,7 @@ def fix_affine_matrix(affine):
 
 def calculate_connected_components_metrics(pred_mask, true_mask):
     """
-    基于连通分量计算召回率和误报率（保留原实现）
+    基于连通分量计算召回率和误报率
     """
     pred_binary = (pred_mask > 0).astype(np.uint8)
     true_binary = (true_mask > 0).astype(np.uint8)
@@ -117,7 +114,7 @@ class UnifiedBoundarySDFLoss3D(nn.Module):
     def __init__(self, clip_dist=5.0):
         """
         Args:
-            clip_dist (float): 截断距离（单位通常为 mm），控制边界缓冲区的范围
+            clip_dist (float): 截断距离，控制边界缓冲区的范围
         """
         super().__init__()
         self.clip_dist = clip_dist
@@ -128,21 +125,15 @@ class UnifiedBoundarySDFLoss3D(nn.Module):
         gt = gt.as_tensor().float()
         sdf = sdf.as_tensor().float()
 
-        # 1. 双向截断距离场 (-5.0 到 +5.0)
-        # 边界外为正 (0 到 5), 边界内为负 (-5 到 0)
         sdf_clipped = torch.clamp(sdf, min=-self.clip_dist, max=0)
-
-        # 2. 核心公式：(pred - gt) * sdf
+        
         boundary_loss_field = (pred - gt) * sdf_clipped
 
-        # 3. 锁定整个 5mm 缓冲区（包括结构内部 5mm 和外部 5mm）
         boundary_mask = (sdf >= -self.clip_dist) & (sdf <= 0)
 
-        # 防御性编程：万一没有有效缓冲区
         if boundary_mask.sum() == 0:
             return torch.tensor(0.0, device=pred.device, requires_grad=True)
 
-        # 4. 只计算缓冲区内的平均损失
         loss = boundary_loss_field[boundary_mask].mean()
 
         return loss
